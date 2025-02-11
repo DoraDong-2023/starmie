@@ -6,6 +6,7 @@ import glob
 import pickle
 import time
 import sys
+import os
 import argparse
 from tqdm import tqdm
 
@@ -26,7 +27,11 @@ def extractVectors(dfs, dataFolder, augment, sample, table_order, run_id, single
         model_path = "results/%s/model_%s_%s_%s_%dsingleCol.pt" % (dataFolder, augment, sample, table_order,run_id)
     else:
         model_path = "results/%s/model_%s_%s_%s_%d.pt" % (dataFolder, augment, sample, table_order,run_id)
-    ckpt = torch.load(model_path, map_location=torch.device('cuda'))
+    #device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda"
+    print('using device : ', device)
+    ckpt = torch.load(model_path, map_location=torch.device(device), weights_only=False)
+    #ckpt = torch.load(model_path, map_location=torch.device('cuda'), weights_only=False)
     # load_checkpoint from sdd/pretain
     model, trainset = load_checkpoint(ckpt)
     return inference_on_tables(dfs, model, trainset, batch_size=1024)
@@ -136,6 +141,8 @@ if __name__ == '__main__':
         else:
             output_path = "data/%s/vectors/cl_%s_%s_%s_%s_%d.pkl" % (dataFolder, saveDir, ao, sm, table_order, run_id)
         if hp.save_model:
+            print('----------saved vectors model!!!!----------')
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             pickle.dump(dataEmbeds, open(output_path, "wb"))
         print("Benchmark: ", dataFolder)
         print("--- Total Inference Time: %s seconds ---" % (inference_times))

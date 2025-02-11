@@ -1,2 +1,7 @@
 
 .DS_Store
+mlruns/
+data/
+output/
+results/
+**/__pycache__/**

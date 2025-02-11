@@ -57,7 +57,6 @@ if __name__ == '__main__':
         path = 'data/table-union-search-benchmark/small/benchmark'
         if hp.task == "tusLarge":
             path = 'data/table-union-search-benchmark/large/benchmark'
-
     else:
         path = 'data/%s/tables' % hp.task
     # trainset = PretrainTableDataset(path,

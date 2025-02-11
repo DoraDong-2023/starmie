@@ -91,6 +91,7 @@ if __name__ == '__main__':
 
     # Load the query file
     qfile = open(query_path,"rb")
+    print('loading qfile from: ', query_path)
     queries = pickle.load(qfile)
     print("Number of queries: %d" % (len(queries)))
     qfile.close()
@@ -123,8 +124,11 @@ if __name__ == '__main__':
             returnedResults[query[0]] = [r[1] for r in res]
             query_times.append(time.time() - query_start_time)
 
-    print("Average QUERY TIME: %s seconds " % (sum(query_times)/len(query_times)))
-    print("10th percentile: ", np.percentile(query_times, 10), " 90th percentile: ", np.percentile(query_times, 90))
+    if query_times:
+        print("Average QUERY TIME: %s seconds " % (sum(query_times)/len(query_times)))
+        print("10th percentile: ", np.percentile(query_times, 10), " 90th percentile: ", np.percentile(query_times, 90))
+    else:
+        print("No queries processed.")
     print("--- Total Query Time: %s seconds ---" % (time.time() - start_time))
 
     # santosLarge and WDC benchmarks are used for efficiency
