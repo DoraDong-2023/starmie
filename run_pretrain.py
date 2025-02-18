@@ -2,7 +2,8 @@ import argparse
 import numpy as np
 import random
 import torch
-import mlflow
+import mlflow, os
+from torch.utils.data import random_split
 
 from sdd.dataset import PretrainTableDataset
 from sdd.pretrain import train
@@ -66,6 +67,19 @@ if __name__ == '__main__':
     #                      size=hp.size,
     #                      single_column=hp.single_column,
     #                      sample_meth=hp.sample_meth)
-    trainset = PretrainTableDataset.from_hp(path, hp)
-
-    train(trainset, hp)
+    #trainset = PretrainTableDataset.from_hp(path, hp)
+    no_val = False
+    all_files = [fn for fn in os.listdir(path) if fn.endswith(".csv")]
+    random.shuffle(all_files)
+    if no_val:
+        train_size = int(0.8 * len(all_files))
+    else:
+        train_size = len(all_files)
+    train_files = all_files[:train_size]
+    val_files = all_files[train_size:]
+    print(f"Total Files: {len(all_files)}, Train: {len(train_files)}, Val: {len(val_files)}")
+    trainset = PretrainTableDataset.from_hp(path, hp, file_list=train_files)
+    valset = PretrainTableDataset.from_hp(path, hp, file_list=val_files) if not no_val else None
+    print("Checking if dataset has pad method:", hasattr(trainset, "pad"))
+    train(trainset, hp, valset)
+    #train(trainset, hp)

@@ -124,6 +124,7 @@ class PretrainTableDataset(data.Dataset):
     def __init__(self,
                  path,
                  augment_op,
+                 file_list=None, 
                  max_len=256,
                  size=None,
                  lm='roberta',
@@ -133,9 +134,14 @@ class PretrainTableDataset(data.Dataset):
         self.tokenizer = AutoTokenizer.from_pretrained(lm_mp[lm])
         self.max_len = max_len
         self.path = path
+        
+        if file_list is None:
+            self.tables = [fn for fn in os.listdir(path) if '.csv' in fn]
+        else:
+            self.tables = file_list
 
         # assuming tables are in csv format
-        self.tables = [fn for fn in os.listdir(path) if '.csv' in fn]
+        #self.tables = [fn for fn in os.listdir(path) if '.csv' in fn]
 
         # only keep the first n tables
         if size is not None:
@@ -162,7 +168,7 @@ class PretrainTableDataset(data.Dataset):
         self.tokenizer_cache = {}
 
     @staticmethod
-    def from_hp(path: str, hp: Namespace):
+    def from_hp(path: str, hp: Namespace, file_list=None):
         """Construct a PretrainTableDataset from hyperparameters
 
         Args:
@@ -174,6 +180,7 @@ class PretrainTableDataset(data.Dataset):
         """
         return PretrainTableDataset(path,
                          augment_op=hp.augment_op,
+                         file_list=file_list,
                          lm=hp.lm,
                          max_len=hp.max_len,
                          size=hp.size,

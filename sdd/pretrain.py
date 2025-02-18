@@ -7,6 +7,7 @@ import sklearn.metrics as metrics
 import mlflow
 import pandas as pd
 import os
+import matplotlib.pyplot as plt
 
 from .utils import evaluate_column_matching, evaluate_clustering
 from .model import BarlowTwinsSimCLR
@@ -32,6 +33,7 @@ def train_step(train_iter, model, optimizer, scheduler, scaler, hp):
     Returns:
         None
     """
+    total_loss = []
     for i, batch in enumerate(train_iter):
         x_ori, x_aug, cls_indices = batch
         optimizer.zero_grad()
@@ -48,12 +50,14 @@ def train_step(train_iter, model, optimizer, scheduler, scaler, hp):
             optimizer.step()
 
         scheduler.step()
+        total_loss.append(loss.item())
         if i % 10 == 0: # monitoring
             print(f"step: {i}, loss: {loss.item()}")
         del loss
+    return total_loss
 
 
-def train(trainset, hp):
+def train(trainset, hp, valset=None):
     """Train and evaluate the model
 
     Args:
@@ -70,13 +74,19 @@ def train(trainset, hp):
                                  shuffle=True,
                                  num_workers=0,
                                  collate_fn=padder)
+    val_iter = data.DataLoader(dataset=valset,
+                                   batch_size=hp.batch_size,
+                                   shuffle=False,
+                                   num_workers=0,
+                                   collate_fn=padder) if valset else None
 
     # initialize model, optimizer, and LR scheduler
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = BarlowTwinsSimCLR(hp, device=device, lm=hp.lm)
-    model = model.cuda()
+    if device=='cuda':
+        model = model.cuda()
     optimizer = AdamW(model.parameters(), lr=hp.lr)
-    if hp.fp16:
+    if device=='cuda' and hp.fp16:
         scaler = torch.cuda.amp.GradScaler()
     else:
         scaler = None
@@ -85,12 +95,41 @@ def train(trainset, hp):
     scheduler = get_linear_schedule_with_warmup(optimizer,
                                                 num_warmup_steps=0,
                                                 num_training_steps=num_steps)
+    step_losses = []
+    step_val_losses = []
+    steps = []
+    plt.ion()
+    fig, ax = plt.subplots()
+    global_step = 0
 
     for epoch in range(1, hp.n_epochs+1):
         # train
         model.train()
-        train_step(train_iter, model, optimizer, scheduler, scaler, hp)
+        train_loss = train_step(train_iter, model, optimizer, scheduler, scaler, hp)
+        step_losses.extend(train_loss)
+        steps.extend(list(range(global_step, global_step + len(train_loss))))
+        global_step += len(train_loss)
+        if valset:
+            model.eval()
+            val_loss = validation_step(val_iter, model, hp)
+            step_val_losses.extend(val_loss)
+        
+        ax.clear()
+        ax.plot(steps, step_losses, label="Train Loss", marker='o', linestyle='-', alpha=0.7)
+        if valset:
+            ax.plot(steps[:len(step_val_losses)], step_val_losses, label="Validation Loss", marker='s', linestyle='--', alpha=0.7)
+        ax.set_xlabel("Step")
+        ax.set_ylabel("Loss")
+        ax.legend()
+        plt.draw()
+        plt.pause(0.1)
+        print(f"Epoch {epoch}: Train Loss (last batch)={train_loss[-1]:.4f}")
+        #plt.savefig(f'./loss_plot_epoch_{epoch}.png')
+        plot_path = f"loss_epoch_{epoch}.png"
+        fig.savefig(plot_path)
+        print(f"Saved loss plot to {plot_path}")
 
+        
         # save the last checkpoint
         if hp.save_model and epoch == hp.n_epochs:
             directory = os.path.join(hp.logdir, hp.task)
@@ -113,24 +152,32 @@ def train(trainset, hp):
         if hp.task in ['small', 'large']:
             # Train column matching models using the learned representations
             metrics_dict = evaluate_pretrain(model, trainset)
-
             # log metrics
             mlflow.log_metrics(metrics_dict)
-
             print("epoch %d: " % epoch + ", ".join(["%s=%f" % (k, v) \
                                     for k, v in metrics_dict.items()]))
-
         # evaluate on column clustering
         if hp.task in ['viznet']:
             # Train column matching models using the learned representations
             metrics_dict = evaluate_column_clustering(model, trainset)
-
             # log metrics
             mlflow.log_metrics(metrics_dict)
             print("epoch %d: " % epoch + ", ".join(["%s=%f" % (k, v) \
                                     for k, v in metrics_dict.items()]))
+        
+    plt.ioff()
+    plt.show()
+    plt.savefig('./loss_plot.png')
 
-
+def validation_step(val_loader, model, hp):
+    total_loss = []
+    model.eval()
+    with torch.no_grad():
+        for batch in val_loader:
+            x_ori, x_aug, cls_indices = batch
+            loss = model(x_ori, x_aug, cls_indices, mode='simclr')
+            total_loss.apppend(loss.item())
+    return total_loss
 
 def inference_on_tables(tables: List[pd.DataFrame],
                         model: BarlowTwinsSimCLR,
