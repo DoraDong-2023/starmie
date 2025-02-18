@@ -18,8 +18,27 @@ from torch.utils import data
 from transformers import AdamW, get_linear_schedule_with_warmup
 from typing import List
 
+import warnings
+warnings.filterwarnings("ignore")
 
-def train_step(train_iter, model, optimizer, scheduler, scaler, hp):
+def plot_curve(steps, step_train_losses, step_val_losses, log_scale=False):
+    plt.figure(figsize=(8, 6))
+    plt.plot(steps, step_train_losses, linestyle='-', color='b', label="Training Loss")
+    if len(step_val_losses)>0:
+        plt.plot(steps, step_val_losses, linestyle='-', color='r', label="Validation Loss")
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    if log_scale:
+        plt.yscale("log")
+    plt.legend()
+    plt.title("Starmie Loss")
+    plt.grid(True)
+    # Save the figure
+    plot_path = "./final_loss_plot.pdf"
+    plt.savefig(plot_path)
+    plt.show()
+
+def train_step(train_iter, val_iter, model, optimizer, scheduler, scaler, hp, step_train_losses, step_val_losses, global_step, steps):
     """Perform a single training step
 
     Args:
@@ -33,11 +52,10 @@ def train_step(train_iter, model, optimizer, scheduler, scaler, hp):
     Returns:
         None
     """
-    total_loss = []
+    model.train()
     for i, batch in enumerate(train_iter):
         x_ori, x_aug, cls_indices = batch
         optimizer.zero_grad()
-
         if hp.fp16:
             with torch.cuda.amp.autocast():
                 loss = model(x_ori, x_aug, cls_indices, mode='simclr')
@@ -48,13 +66,22 @@ def train_step(train_iter, model, optimizer, scheduler, scaler, hp):
             loss = model(x_ori, x_aug, cls_indices, mode='simclr')
             loss.backward()
             optimizer.step()
-
         scheduler.step()
-        total_loss.append(loss.item())
+        global_step += 1
+
         if i % 10 == 0: # monitoring
-            print(f"step: {i}, loss: {loss.item()}")
+            step_train_losses.append(loss.item())
+            steps.append(global_step)
+            if val_iter:
+                model.eval()
+                with torch.no_grad():
+                    val_batch = next(iter(val_iter))  # Take one batch from val_loader
+                    x_val_ori, x_val_aug, val_cls_indices = val_batch
+                    val_loss = model(x_val_ori, x_val_aug, val_cls_indices, mode='simclr')
+                    step_val_losses.append(val_loss.item())  # Store validation loss
+            print(f"Step {global_step}: Train Loss = {loss.item():.4f}, Val Loss = {val_loss.item():.4f}" if val_iter else f"Step {global_step}: Train Loss = {loss.item():.4f}")
         del loss
-    return total_loss
+    return step_train_losses, step_val_losses, global_step, steps
 
 
 def train(trainset, hp, valset=None):
@@ -90,62 +117,30 @@ def train(trainset, hp, valset=None):
         scaler = torch.cuda.amp.GradScaler()
     else:
         scaler = None
-
     num_steps = (len(trainset) // hp.batch_size) * hp.n_epochs
     scheduler = get_linear_schedule_with_warmup(optimizer,
                                                 num_warmup_steps=0,
                                                 num_training_steps=num_steps)
-    step_losses = []
+    step_train_losses = []
     step_val_losses = []
     steps = []
-    plt.ion()
-    fig, ax = plt.subplots()
     global_step = 0
-
     for epoch in range(1, hp.n_epochs+1):
         # train
-        model.train()
-        train_loss = train_step(train_iter, model, optimizer, scheduler, scaler, hp)
-        step_losses.extend(train_loss)
-        steps.extend(list(range(global_step, global_step + len(train_loss))))
-        global_step += len(train_loss)
-        if valset:
-            model.eval()
-            val_loss = validation_step(val_iter, model, hp)
-            step_val_losses.extend(val_loss)
-        
-        ax.clear()
-        ax.plot(steps, step_losses, label="Train Loss", marker='o', linestyle='-', alpha=0.7)
-        if valset:
-            ax.plot(steps[:len(step_val_losses)], step_val_losses, label="Validation Loss", marker='s', linestyle='--', alpha=0.7)
-        ax.set_xlabel("Step")
-        ax.set_ylabel("Loss")
-        ax.legend()
-        plt.draw()
-        plt.pause(0.1)
-        print(f"Epoch {epoch}: Train Loss (last batch)={train_loss[-1]:.4f}")
-        #plt.savefig(f'./loss_plot_epoch_{epoch}.png')
-        plot_path = f"loss_epoch_{epoch}.png"
-        fig.savefig(plot_path)
-        print(f"Saved loss plot to {plot_path}")
-
-        
+        step_train_losses, step_val_losses, global_step, steps = train_step(train_iter, val_iter, model, optimizer, scheduler, scaler, hp, step_train_losses, step_val_losses, global_step, steps)
         # save the last checkpoint
         if hp.save_model and epoch == hp.n_epochs:
             directory = os.path.join(hp.logdir, hp.task)
             if not os.path.exists(directory):
                 os.makedirs(directory)
-
             # save the checkpoints for each component
             if hp.single_column:
                 ckpt_path = os.path.join(hp.logdir, hp.task, 'model_'+str(hp.augment_op)+'_'+str(hp.sample_meth)+'_'+str(hp.table_order)+'_'+str(hp.run_id)+'singleCol.pt')
             else:
                 ckpt_path = os.path.join(hp.logdir, hp.task, 'model_'+str(hp.augment_op)+'_'+str(hp.sample_meth)+'_'+str(hp.table_order)+'_'+str(hp.run_id)+'.pt')
-
             ckpt = {'model': model.state_dict(),
                     'hp': hp}
             torch.save(ckpt, ckpt_path)
-
             # test loading checkpoints
             # load_checkpoint(ckpt_path)
         # intrinsic evaluation with column matching
@@ -164,10 +159,13 @@ def train(trainset, hp, valset=None):
             mlflow.log_metrics(metrics_dict)
             print("epoch %d: " % epoch + ", ".join(["%s=%f" % (k, v) \
                                     for k, v in metrics_dict.items()]))
-        
-    plt.ioff()
-    plt.show()
-    plt.savefig('./loss_plot.png')
+    save_losses_as_csv(steps, step_train_losses, step_val_losses)
+    plot_curve(steps, step_train_losses, step_val_losses)
+
+def save_losses_as_csv(steps, train_losses, val_losses, filename="loss_data.csv"):
+    df = pd.DataFrame({"Step": steps, "Train Loss": train_losses, "Validation Loss": val_losses})
+    df.to_csv(filename, index=False)
+    print(f"Loss data saved to {filename}")
 
 def validation_step(val_loader, model, hp):
     total_loss = []
@@ -176,7 +174,7 @@ def validation_step(val_loader, model, hp):
         for batch in val_loader:
             x_ori, x_aug, cls_indices = batch
             loss = model(x_ori, x_aug, cls_indices, mode='simclr')
-            total_loss.apppend(loss.item())
+            total_loss.append(loss.item())
     return total_loss
 
 def inference_on_tables(tables: List[pd.DataFrame],
@@ -361,3 +359,21 @@ def evaluate_column_clustering(model: BarlowTwinsSimCLR,
             column_vectors.append(vec[-1])
 
     return evaluate_clustering(column_vectors, ds['class'])
+
+def load_and_read_csv(filename="loss_data.csv", num_rows=10):
+    """Load and display the first few rows of the saved loss data CSV."""
+    try:
+        df = pd.read_csv(filename)
+        print(f"Loaded CSV from {filename}")
+        print(df.head(num_rows))  # Show the first few rows
+        return df
+    except Exception as e:
+        print(f"Error loading CSV: {e}")
+        return None
+
+if __name__=='main':
+    # test mode
+    df = load_and_read_csv("loss_data.csv")
+    print(df)
+    plot_curve(df['steps'], df['train_losses'], df['val_losses'], log_scale=True)
+    
